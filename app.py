@@ -1,16 +1,19 @@
 import streamlit as st
+import time
 from streamlit_autorefresh import st_autorefresh
 
-st.set_page_config(page_title="Canlı Quiz", layout="centered")
+st.set_page_config(page_title="Sayısal Tahmin Yarışması", layout="centered")
 
-# --- 1. GLOBAL HAFIZA (GEÇİCİ VERİTABANI) ---
+# --- 1. GLOBAL HAFIZA ---
 @st.cache_resource
 def global_veri_getir():
     return {
         "sorular": [],
         "oyuncular": {},       
         "durum": "hazirlik",   
-        "aktif_soru_index": 0
+        "aktif_soru_index": 0,
+        "soru_baslama_zamani": 0.0,
+        "gecis_kilitli_mi": False # Birden fazla kişinin aynı anda süreyi bitirmesini engeller
     }
 
 db = global_veri_getir()
@@ -18,47 +21,42 @@ db = global_veri_getir()
 if "benim_adim" not in st.session_state:
     st.session_state.benim_adim = None
 
-# --- 2. OTOMATİK YENİLEME MANTIĞI (HİLE KISMI) ---
-# Eğer kullanıcı giriş yapmışsa ve mevcut soruyu cevapladıysa 
-# VEYA yarışma henüz başlamadıysa arka planda her 2 saniyede bir sayfayı yenile!
-otomatik_yenile = False
+# --- 2. OTOMATİK YENİLEME ---
+# Sadece yarışma esnasında saniyede 1 kez sayfa yenilenir ki sayaç geriye aksın
+if db["durum"] == "basladi":
+    st_autorefresh(interval=1000, key="sayac_yenileyici")
 
+
+# --- 3. EKRANLAR ---
+
+# A) YÖNETİCİ / SORU EKLEME EKRANI
 if db["durum"] == "hazirlik":
-    otomatik_yenile = True
-elif db["durum"] == "basladi" and st.session_state.benim_adim:
-    benim_bilgim = db["oyuncular"].get(st.session_state.benim_adim, {})
-    if benim_bilgim.get("cevapladi_mi", False) == True:
-        otomatik_yenile = True
-
-if otomatik_yenile:
-    # 2000 milisaniye (2 saniye) aralıklarla sessizce sayfayı yeniler
-    st_autorefresh(interval=2000, key="bekleme_yenileyici")
-
-
-# --- 3. EKRAN YÖNLENDİRMELERİ ---
-
-# A) HAZIRLIK EKRANI (Sunucu Görür)
-if db["durum"] == "hazirlik":
-    st.title("⚙️ Yarışma Kurulumu")
-    st.info("Bu ekranı katılımcılar görmüyor. Soruları ekledikten sonra yarışmayı başlatın.")
+    st.title("⚙️ Yönetici Paneli")
+    st.info("Soruları ve süreleri ekleyin. Rakam bazlı tahmin yarışması başlıyor!")
     
     with st.form("soru_ekle"):
         soru = st.text_input("Soru Metni")
-        cevap = st.selectbox("Doğru Seçenek", ["A", "B", "C", "D"])
+        cevap = st.number_input("Doğru Cevap (Sayısal)", value=0.0, step=1.0)
+        sure = st.number_input("Bu Soru İçin Süre (Saniye)", min_value=5, max_value=120, value=20)
+        
         ekle = st.form_submit_button("Soruyu Ekle")
         if ekle and soru:
-            db["sorular"].append({"soru": soru, "cevap": cevap})
-            st.success(f"Soru eklendi! Toplam soru: {len(db['sorular'])}")
+            db["sorular"].append({"soru": soru, "cevap": float(cevap), "sure": int(sure)})
+            st.success(f"Soru eklendi! Toplam: {len(db['sorular'])}")
             
     if len(db["sorular"]) > 0:
         if st.button("🚀 Yarışmayı Herkes İçin Başlat", type="primary"):
             db["durum"] = "basladi"
+            db["aktif_soru_index"] = 0
+            db["soru_baslama_zamani"] = time.time() # İlk sorunun süresini başlat
+            db["gecis_kilitli_mi"] = False
             st.rerun()
+
 
 # B) YARIŞMA EKRANI
 elif db["durum"] == "basladi":
     
-    # Adım 1: İsim Alma
+    # Adım 1: Kullanıcı Girişi
     if not st.session_state.benim_adim:
         st.title("Yarışmaya Katıl!")
         isim = st.text_input("Görünecek Adınız:")
@@ -66,13 +64,14 @@ elif db["durum"] == "basladi":
             if isim:
                 st.session_state.benim_adim = isim
                 if isim not in db["oyuncular"]:
-                    db["oyuncular"][isim] = {"skor": 0, "cevapladi_mi": False}
+                    db["oyuncular"][isim] = {"skor": 0.0, "son_cevap": None}
                 st.rerun()
                 
-    # Adım 2: Soru Ekranı
+    # Adım 2: Canlı Soru ve Sayaç Ekranı
     else:
         idx = db["aktif_soru_index"]
         
+        # Eğer sorular bittiyse oyun sonu ekranına geç
         if idx >= len(db["sorular"]):
             db["durum"] = "bitti"
             st.rerun()
@@ -80,46 +79,73 @@ elif db["durum"] == "basladi":
         aktif_soru = db["sorular"][idx]
         benim_bilgim = db["oyuncular"][st.session_state.benim_adim]
         
-        st.header(f"Soru {idx + 1}")
-        st.write(aktif_soru["soru"])
+        # Süre hesaplama mantığı
+        gecen_zaman = time.time() - db["soru_baslama_zamani"]
+        kalan_sure = max(0, int(aktif_soru["sure"] - gecen_zaman))
         
-        if not benim_bilgim["cevapladi_mi"]:
-            st.write("Cevabınızı seçin:")
-            col1, col2, col3, col4 = st.columns(4)
+        # EĞER SÜRE BİTTİYSE (Otomatik Geçiş ve Puanlama)
+        if kalan_sure == 0:
+            st.warning("⏰ Süre Doldu! Puanlar hesaplanıyor...")
             
-            def cevap_kontrol(secim):
-                db["oyuncular"][st.session_state.benim_adim]["cevapladi_mi"] = True
-                if secim == aktif_soru["cevap"]:
-                    db["oyuncular"][st.session_state.benim_adim]["skor"] += 10
-            
-            with col1:
-                if st.button("A", use_container_width=True): cevap_kontrol("A"); st.rerun()
-            with col2:
-                if st.button("B", use_container_width=True): cevap_kontrol("B"); st.rerun()
-            with col3:
-                if st.button("C", use_container_width=True): cevap_kontrol("C"); st.rerun()
-            with col4:
-                if st.button("D", use_container_width=True): cevap_kontrol("D"); st.rerun()
-        else:
-            st.success("Cevabınız alındı!")
-            with st.spinner("Sunucunun diğer soruya geçmesi bekleniyor..."):
-                pass # st_autorefresh burada devreye girip sayfayı 2 saniyede bir güncelliyor.
-        
-        st.markdown("---")
-        # SUNUCU KONTROLLERİ (Sadece Yönetici)
-        with st.expander("👑 Sunucu Kontrolleri (Sadece Yönetici)"):
-            if st.button("Sonraki Soruya Geç Herkes İçin"):
+            # Bu bloğun sadece 1 kez çalışması için kilit mekanizması
+            if not db["gecis_kilitli_mi"]:
+                db["gecis_kilitli_mi"] = True
+                
+                dogru_cevap = aktif_soru["cevap"]
+                
+                # Herkesin puanını hesapla
+                for oyuncu_adi, veri in db["oyuncular"].items():
+                    tahmin = veri["son_cevap"]
+                    if tahmin is not None:
+                        if dogru_cevap != 0:
+                            # Hata payını yüzdelik olarak hesapla
+                            hata_orani = abs(tahmin - dogru_cevap) / abs(dogru_cevap)
+                            kazanilan_puan = max(0.0, 100.0 - (hata_orani * 100.0))
+                        else:
+                            # Eğer cevap tam olarak 0 ise (örn: pH değeri 0 olan bir şey sorulursa)
+                            kazanilan_puan = 100.0 if tahmin == 0 else 0.0
+                            
+                        db["oyuncular"][oyuncu_adi]["skor"] += kazanilan_puan
+                        
+                    # Bir sonraki soru için cevabı sıfırla
+                    db["oyuncular"][oyuncu_adi]["son_cevap"] = None
+                
+                # Sonraki Soruya Geçiş Değerlerini Güncelle
                 db["aktif_soru_index"] += 1
-                for oyuncu in db["oyuncular"]:
-                    db["oyuncular"][oyuncu]["cevapladi_mi"] = False
+                db["soru_baslama_zamani"] = time.time()
+                db["gecis_kilitli_mi"] = False
                 st.rerun()
+                
+        # EĞER SÜRE DEVAM EDİYORSA
+        else:
+            st.header(f"Soru {idx + 1}")
+            st.subheader(aktif_soru["soru"])
+            
+            # Canlı İlerleme Çubuğu ve Sayaç
+            st.metric("⏳ Kalan Süre", f"{kalan_sure} saniye")
+            st.progress(kalan_sure / aktif_soru["sure"])
+            
+            # Cevap girme alanı
+            if benim_bilgim["son_cevap"] is None:
+                with st.form(f"cevap_formu_{idx}"):
+                    st.info("Lütfen sadece rakam kullanarak tahmininizi girin.")
+                    tahmin = st.number_input("Tahmininiz:", value=0.0, step=1.0)
+                    gonder = st.form_submit_button("Cevabı Gönder")
+                    
+                    if gonder:
+                        db["oyuncular"][st.session_state.benim_adim]["son_cevap"] = float(tahmin)
+                        st.rerun()
+            else:
+                st.success(f"Tahmininiz ({benim_bilgim['son_cevap']}) başarıyla alındı! Herkesin süresinin dolması bekleniyor...")
 
-# C) BİTİŞ EKRANI
+
+# C) BİTİŞ VE SKOR TABLOSU
 elif db["durum"] == "bitti":
     st.balloons()
-    st.title("🏆 Yarışma Bitti!")
+    st.title("🏆 Yarışma Sona Erdi!")
     
-    skor_listesi = [{"Oyuncu": k, "Puan": v["skor"]} for k, v in db["oyuncular"].items()]
+    # Skoru yüksekten düşüğe doğru listeleme
+    skor_listesi = [{"Oyuncu": k, "Toplam Puan": round(v["skor"], 2)} for k, v in db["oyuncular"].items()]
     if skor_listesi:
-        skor_listesi.sort(key=lambda x: x["Puan"], reverse=True)
+        skor_listesi.sort(key=lambda x: x["Toplam Puan"], reverse=True)
         st.table(skor_listesi)
