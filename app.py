@@ -10,20 +10,20 @@ st.set_page_config(page_title="Sayısal Tahmin Yarışması", layout="centered")
 col_bosluk, col_logo = st.columns([4, 1])
 with col_logo:
     try:
-        # Fotoğrafınızın tam adını buraya yazın
+        # Fotoğrafınızın tam adını buraya yazın (Örn: image_4843bd.jpg)
         st.image("image_4843bd.jpg", use_column_width=True)
     except FileNotFoundError:
         pass 
 st.markdown("---")
 
 
-# --- 1. GLOBAL HAFIZA (Tüm cihazlar için ortak) ---
+# --- 1. GLOBAL HAFIZA ---
 @st.cache_resource
 def global_veri_getir():
     return {
         "sorular": [],
         "oyuncular": {},       
-        "durum": "hazirlik",   # YENİ AKIŞ: hazirlik -> lobi -> basladi -> bitti
+        "durum": "hazirlik",   
         "aktif_soru_index": 0,
         "soru_baslama_zamani": 0.0,
         "gecis_kilitli_mi": False 
@@ -35,8 +35,7 @@ if "benim_adim" not in st.session_state:
     st.session_state.benim_adim = None
 
 
-# --- 2. OTOMATİK YENİLEME MANTIĞI ---
-# Sayfa hem lobide beklerken hem de yarışma sırasında saniyede bir güncellenir
+# --- 2. OTOMATİK YENİLEME ---
 if db["durum"] in ["lobi", "basladi"]:
     st_autorefresh(interval=1000, key="sayac_yenileyici")
 
@@ -64,15 +63,36 @@ if db["durum"] == "hazirlik":
             
     if len(db["sorular"]) > 0:
         if st.button("👥 Katılımcı Alımını Başlat (Lobi)", type="primary"):
-            db["durum"] = "lobi" # Süreyi başlatmıyoruz, sadece lobiye geçiyoruz
+            db["durum"] = "lobi" 
             st.rerun()
 
 
 # B) LOBİ (BEKLEME ODASI) EKRANI
 elif db["durum"] == "lobi":
-    st.title("⏳ Yarışma Başlamak Üzere!")
+    # Başlık ve Gizli Başlatma Butonu (Ψ) yan yana
+    col_baslik, col_baslat = st.columns([8, 1])
+    with col_baslik:
+        st.title("⏳ Yarışma Başlamak Üzere!")
+    with col_baslat:
+        # Sağ üstte sade ve şık psikoloji simgesi. Sadece siz tıklayıp başlatacaksınız.
+        st.write("") 
+        if st.button("Ψ", help="Yarışmayı Başlat"):
+            db["durum"] = "basladi"
+            db["aktif_soru_index"] = 0
+            db["soru_baslama_zamani"] = time.time()
+            db["gecis_kilitli_mi"] = False
+            st.rerun()
+
+    # Sadece bağlanan katılımcılar gözükür
+    st.write(f"**Bağlanan Katılımcılar ({len(db['oyuncular'])} kişi):**")
+    if db["oyuncular"]:
+        st.info(", ".join(list(db["oyuncular"].keys())))
+    else:
+        st.info("Henüz kimse katılmadı.")
     
-    # 1. Aşama: Kullanıcı İsim Girer (Süre Kaygısı Yok)
+    st.markdown("---")
+    
+    # Kullanıcı İsim Girme Alanı
     if not st.session_state.benim_adim:
         st.write("Lütfen yarışmada görünecek adınızı girin.")
         isim = st.text_input("Adınız:")
@@ -86,26 +106,11 @@ elif db["durum"] == "lobi":
                 st.warning("Lütfen bir isim girin.")
     else:
         st.success(f"Bağlandınız, {st.session_state.benim_adim}! Sunucunun yarışmayı başlatması bekleniyor...")
-    
-    st.markdown("---")
-    
-    # Sunucu oyunu buradan fiilen başlatır (Süre buradan itibaren işler)
-    with st.expander("👑 Sunucu Kontrolleri (Sadece Yönetici)"):
-        st.write(f"**Bağlanan Oyuncular ({len(db['oyuncular'])} kişi):**")
-        st.write(", ".join(list(db["oyuncular"].keys())))
-        
-        if st.button("🚀 İlk Soruyu Başlat ve Süreyi Başlat", type="primary"):
-            db["durum"] = "basladi"
-            db["aktif_soru_index"] = 0
-            db["soru_baslama_zamani"] = time.time() # SÜRE TAM OLARAK BURADA BAŞLAR!
-            db["gecis_kilitli_mi"] = False
-            st.rerun()
 
 
 # C) YARIŞMA EKRANI
 elif db["durum"] == "basladi":
     
-    # Eğer lobiyi kaçırıp sonradan giren olursa diye hızlı isim alma
     if not st.session_state.benim_adim:
         st.warning("Yarışma başladı! Hızlıca isminizi girip katılın.")
         isim = st.text_input("Adınız:")
@@ -116,7 +121,6 @@ elif db["durum"] == "basladi":
                     db["oyuncular"][isim] = {"skor": 0.0, "son_cevap": None}
                 st.rerun()
     
-    # Normal Soru Akışı
     else:
         idx = db["aktif_soru_index"]
         
@@ -196,10 +200,14 @@ elif db["durum"] == "bitti":
         st.write("Tüm soruları tamamladınız. İşte final puanları:")
         
         df_skor = pd.DataFrame(skor_listesi)
-        df_skor = df_skor.sort_values(by='Toplam Puan', ascending=False).reset_index(drop=True)
+        df_skor = df_skor.sort_values(by='Toplam Puan', ascending=False)
         df_skor['Toplam Puan'] = df_skor['Toplam Puan'].map('{:.2f}'.format)
         
-        # hide_index=True parametresi sol taraftaki rahatsız edici "0, 1, 2" rakamlarını tamamen kaldırır!
-        st.dataframe(df_skor, hide_index=True, use_container_width=True)
+        # Oyuncu sütununu index yapıyoruz. 
+        # Böylece numaralar kaybolur ve st.table ile sabit/temiz bir tablo elde ederiz.
+        df_skor.set_index('Oyuncu', inplace=True)
+        
+        # st.dataframe yerine st.table kullanarak sağ üstteki sinir bozucu toolbar menüsünü tamamen yok ediyoruz.
+        st.table(df_skor)
     else:
         st.write("Kimse puan alamadı :(")
