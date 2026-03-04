@@ -4,13 +4,13 @@ from streamlit_autorefresh import st_autorefresh
 import pandas as pd
 
 # --- Sayfa Ayarları ---
-st.set_page_config(page_title="Sayısal Tahmin Yarışması", layout="centered")
+st.set_page_config(page_title="Psikoloji Quiz", layout="centered")
 
 # --- SABİT LOGO YERLEŞİMİ (SAĞ ÜST KÖŞE) ---
 col_bosluk, col_logo = st.columns([4, 1])
 with col_logo:
     try:
-        # Fotoğrafınızın tam adını buraya yazın (Örn: image_4843bd.jpg)
+        # Logonuzun adı aynı kalıyor
         st.image("image_4843bd.jpg", use_column_width=True)
     except FileNotFoundError:
         pass 
@@ -69,14 +69,18 @@ if db["durum"] == "hazirlik":
 
 # B) LOBİ (BEKLEME ODASI) EKRANI
 elif db["durum"] == "lobi":
-    # Başlık ve Gizli Başlatma Butonu (Ψ) yan yana
-    col_baslik, col_baslat = st.columns([8, 1])
+    
+    # Sütunları bölerek "Ψ" butonunu iyice sağa itiyoruz
+    # col_baslik (çok geniş), col_bos (ara boşluk), col_baslat (sağda küçük alan)
+    col_baslik, col_bos, col_baslat = st.columns([8, 1, 1])
     with col_baslik:
         st.title("⏳ Yarışma Başlamak Üzere!")
+        
     with col_baslat:
-        # Sağ üstte sade ve şık psikoloji simgesi. Sadece siz tıklayıp başlatacaksınız.
-        st.write("") 
-        if st.button("Ψ", help="Yarışmayı Başlat"):
+        st.write("") # Biraz aşağı itmek için boşluk
+        # help="..." KISMI KALDIRILDI (Tooltip çıkmayacak)
+        # type="tertiary" EKLENDİ (Buton çerçevesiz, arka plansız düz metin gibi görünecek)
+        if st.button("Ψ", type="tertiary"):
             db["durum"] = "basladi"
             db["aktif_soru_index"] = 0
             db["soru_baslama_zamani"] = time.time()
@@ -203,11 +207,8 @@ elif db["durum"] == "bitti":
         df_skor = df_skor.sort_values(by='Toplam Puan', ascending=False)
         df_skor['Toplam Puan'] = df_skor['Toplam Puan'].map('{:.2f}'.format)
         
-        # Oyuncu sütununu index yapıyoruz. 
-        # Böylece numaralar kaybolur ve st.table ile sabit/temiz bir tablo elde ederiz.
+        # Oyuncu sütunu index yapılarak st.table ile sabit ve temiz bir tablo sunulur.
         df_skor.set_index('Oyuncu', inplace=True)
-        
-        # st.dataframe yerine st.table kullanarak sağ üstteki sinir bozucu toolbar menüsünü tamamen yok ediyoruz.
         st.table(df_skor)
     else:
         st.write("Kimse puan alamadı :(")
